@@ -35,41 +35,38 @@ class RandomProxy(object):
         self.mode = settings.get('PROXY_MODE')
         self.proxy_list = settings.get('PROXY_LIST')
         self.chosen_proxy = ''
-        if self.proxy_list is None:
-            raise KeyError('PROXY_LIST setting is missing')
 
         if self.mode == Mode.RANDOMIZE_PROXY_EVERY_REQUESTS or self.mode == Mode.RANDOMIZE_PROXY_ONCE:
+            if self.proxy_list is None:
+                raise KeyError('PROXY_LIST setting is missing')
+
             fin = open(self.proxy_list)
             self.proxies = {}
             for line in fin.readlines():
-                parts = re.match('(\w+://)(\w+:\w+@)?(.+)', line.strip())
-                if not parts:
-                    continue
-
-                # Cut trailing @
-                if parts.group(2):
-                    user_pass = parts.group(2)[:-1]
-                else:
-                    user_pass = ''
-
-                self.proxies[parts.group(1) + parts.group(3)] = user_pass
+                user_pass, host = self.parse_proxy_auth(line)
+                self.proxies[host] = user_pass
             fin.close()
             if self.mode == Mode.RANDOMIZE_PROXY_ONCE:
                 self.chosen_proxy = random.choice(list(self.proxies.keys()))
         elif self.mode == Mode.SET_CUSTOM_PROXY:
             custom_proxy = settings.get('CUSTOM_PROXY')
             self.proxies = {}
-            parts = re.match('(\w+://)(\w+:\w+@)?(.+)', custom_proxy.strip())
-            if not parts:
-                raise ValueError('CUSTOM_PROXY is not well formatted')
+            user_pass, host = self.parse_proxy_auth(custom_proxy)
 
-            if parts.group(2):
-                user_pass = parts.group(2)[:-1]
-            else:
-                user_pass = ''
+            self.proxies[host] = user_pass
+            self.chosen_proxy = host
 
-            self.proxies[parts.group(1) + parts.group(3)] = user_pass
-            self.chosen_proxy = parts.group(1) + parts.group(3)
+    def parse_proxy_auth(self, proxy_url):
+        parts = re.match('(\w+://)(\w+:\w+@)?(.+)', proxy_url.strip())
+        if not parts:
+            raise ValueError('PROXY URL %s is not well formatted' % (proxy_url))
+
+        if parts.group(2):
+            user_pass = parts.group(2)[:-1]
+        else:
+            user_pass = ''
+
+        return user_pass, parts.group(1) + parts.group(3)
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -90,15 +87,14 @@ class RandomProxy(object):
             proxy_address = self.chosen_proxy
 
         proxy_user_pass = self.proxies[proxy_address]
-
+        request.meta['proxy'] = proxy_address
+        log.debug('Using proxy <%s>, %d proxies left' % (proxy_address, len(self.proxies)))
         if proxy_user_pass:
-            request.meta['proxy'] = proxy_address
+            log.debug('Proxy User:Pass found: %s' % (proxy_user_pass))
             basic_auth = 'Basic ' + base64.b64encode(proxy_user_pass.encode()).decode()
             request.headers['Proxy-Authorization'] = basic_auth
         else:
-            log.debug('Proxy user pass not found')
-        log.debug('Using proxy <%s>, %d proxies left' % (
-                proxy_address, len(self.proxies)))
+            log.debug('No User:Pass for this proxy')
 
     def process_exception(self, request, exception, spider):
         if 'proxy' not in request.meta:
